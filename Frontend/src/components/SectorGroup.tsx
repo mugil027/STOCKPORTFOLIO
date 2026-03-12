@@ -194,4 +194,4 @@ const SectorGroup: React.FC<SectorGroupProps> = ({ sector, index }) => {
   );
 };
 
-export default SectorGroup;
+export default React.memo(SectorGroup);

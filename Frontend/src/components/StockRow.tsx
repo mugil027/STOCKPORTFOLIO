@@ -129,4 +129,4 @@ const StockRow: React.FC<StockRowProps> = ({ stock, index }) => {
   );
 };
 
-export default StockRow;
+export default React.memo(StockRow);
