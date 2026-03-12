@@ -2,6 +2,7 @@ import { portfolioHoldings } from '../data/holdings';
 import { mockMarketData } from '../data/mockData';
 import { fetchCMPBatch, fetchFundamentalsBatch, YahooFundamentals } from './yahooFinanceService';
 import { fetchGoogleFinanceBatch } from './googleFinanceService';
+import { fetchFinnhubBatch, FinnhubData } from './finnhubService';
 import {
   EnrichedStock,
   SectorSummary,
@@ -12,11 +13,11 @@ import {
 /**
  * Main service that orchestrates data fetching and portfolio computation.
  *
- * 3-Tier Fallback Flow:
- * ┌──────────────────────────────────────────────────────────────┐
- * │  CMP:    Yahoo Finance → Mock                                │
- * │  PE/EPS: Google Finance → Yahoo quoteSummary → Mock          │
- * └──────────────────────────────────────────────────────────────┘
+ * 4-Tier Fallback Flow:
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │  CMP:    Yahoo Finance → Finnhub → Mock                          │
+ * │  PE/EPS: Google Finance → Yahoo quoteSummary → Finnhub → Mock    │
+ * └──────────────────────────────────────────────────────────────────┘
  *
  * After merging data from all tiers:
  *  - Compute derived fields (investment, present value, gain/loss, etc.)
@@ -54,48 +55,74 @@ export async function getEnrichedPortfolio(): Promise<PortfolioResponse> {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // TIER 3: Merge all data with mock fallback
+  // TIER 3: Finnhub (for any stocks still missing CMP or PE/EPS)
   // ═══════════════════════════════════════════════════════════
-  console.log('\n═══ TIER 3: Merging data (mock fallback for remaining) ═══');
+  const needFinnhub = exchangeCodes.filter((code) => {
+    const yahooCMP   = cmpMap.get(code) ?? null;
+    const googleData = googleMap.get(code);
+    const yahooFund  = yahooFundMap.get(code);
+    const missingCMP = yahooCMP === null;
+    const missingPE  = (googleData?.peRatio ?? null) === null && (yahooFund?.peRatio ?? null) === null;
+    const missingEPS = (googleData?.latestEarnings ?? null) === null && (yahooFund?.eps ?? null) === null;
+    return missingCMP || missingPE || missingEPS;
+  });
+
+  let finnhubMap = new Map<string, FinnhubData>();
+
+  if (needFinnhub.length > 0) {
+    console.log(`\n═══ TIER 3: Fetching ${needFinnhub.length} stocks from Finnhub ═══`);
+    finnhubMap = await fetchFinnhubBatch(needFinnhub);
+  } else {
+    console.log('\n═══ TIER 3: Skipped — all data resolved from Tier 1 & 2 ═══');
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // TIER 4: Merge all data with mock fallback
+  // ═══════════════════════════════════════════════════════════
+  console.log('\n═══ TIER 4: Merging data (mock fallback for remaining) ═══');
 
   const marketDataMap = new Map<string, MarketData>();
   let liveCount = 0;
   let mockCount = 0;
-  let peFromGoogle = 0, peFromYahoo = 0, peFromMock = 0;
-  let epsFromGoogle = 0, epsFromYahoo = 0, epsFromMock = 0;
+  let cmpFromYahoo = 0, cmpFromFinnhub = 0;
+  let peFromGoogle = 0, peFromYahoo = 0, peFromFinnhub = 0, peFromMock = 0;
+  let epsFromGoogle = 0, epsFromYahoo = 0, epsFromFinnhub = 0, epsFromMock = 0;
 
   for (const holding of portfolioHoldings) {
     const code = holding.exchangeCode;
 
-    // Get data from each tier
-    const yahooCMP = cmpMap.get(code) ?? null;
-    const googleData = googleMap.get(code) ?? { peRatio: null, latestEarnings: null };
-    const yahooFund = yahooFundMap.get(code) ?? { peRatio: null, eps: null };
-    const mock = mockMarketData[code];
+    const yahooCMP    = cmpMap.get(code) ?? null;
+    const googleData  = googleMap.get(code) ?? { peRatio: null, latestEarnings: null };
+    const yahooFund   = yahooFundMap.get(code) ?? { peRatio: null, eps: null };
+    const finnhubData = finnhubMap.get(code) ?? { cmp: null, peRatio: null, eps: null };
+    const mock        = mockMarketData[code];
 
-    // Resolve CMP: Yahoo → Mock
-    const cmp = yahooCMP ?? mock?.cmp ?? null;
-    let cmpSource: 'yahoo' | 'mock' | null = null;
-    if (yahooCMP !== null) cmpSource = 'yahoo';
-    else if (mock?.cmp != null) cmpSource = 'mock';
+    // Resolve CMP: Yahoo → Finnhub → Mock
+    const cmp = yahooCMP ?? finnhubData.cmp ?? mock?.cmp ?? null;
+    let cmpSource: 'yahoo' | 'finnhub' | 'mock' | null = null;
+    if (yahooCMP !== null)             { cmpSource = 'yahoo';   cmpFromYahoo++;   }
+    else if (finnhubData.cmp !== null) { cmpSource = 'finnhub'; cmpFromFinnhub++; }
+    else if (mock?.cmp != null)        { cmpSource = 'mock'; }
 
-    // Resolve P/E: Google → Yahoo quoteSummary → Mock
-    const peRatio = googleData.peRatio ?? yahooFund.peRatio ?? mock?.peRatio ?? null;
-    let peSource: 'google' | 'yahoo' | 'mock' | null = null;
-    if (googleData.peRatio !== null) { peSource = 'google'; peFromGoogle++; }
-    else if (yahooFund.peRatio !== null) { peSource = 'yahoo'; peFromYahoo++; }
-    else if (mock?.peRatio != null) { peSource = 'mock'; peFromMock++; }
+    // Resolve P/E: Google → Yahoo quoteSummary → Finnhub → Mock
+    const peRatio = googleData.peRatio ?? yahooFund.peRatio ?? finnhubData.peRatio ?? mock?.peRatio ?? null;
+    let peSource: 'google' | 'yahoo' | 'finnhub' | 'mock' | null = null;
+    if (googleData.peRatio !== null)       { peSource = 'google';  peFromGoogle++;  }
+    else if (yahooFund.peRatio !== null)   { peSource = 'yahoo';   peFromYahoo++;   }
+    else if (finnhubData.peRatio !== null) { peSource = 'finnhub'; peFromFinnhub++; }
+    else if (mock?.peRatio != null)        { peSource = 'mock';    peFromMock++;    }
 
-    // Resolve EPS: Google → Yahoo quoteSummary → Mock
-    const latestEarnings = googleData.latestEarnings ?? yahooFund.eps ?? mock?.latestEarnings ?? null;
-    let epsSource: 'google' | 'yahoo' | 'mock' | null = null;
-    if (googleData.latestEarnings !== null) { epsSource = 'google'; epsFromGoogle++; }
-    else if (yahooFund.eps !== null) { epsSource = 'yahoo'; epsFromYahoo++; }
-    else if (mock?.latestEarnings != null) { epsSource = 'mock'; epsFromMock++; }
+    // Resolve EPS: Google → Yahoo quoteSummary → Finnhub → Mock
+    const latestEarnings = googleData.latestEarnings ?? yahooFund.eps ?? finnhubData.eps ?? mock?.latestEarnings ?? null;
+    let epsSource: 'google' | 'yahoo' | 'finnhub' | 'mock' | null = null;
+    if (googleData.latestEarnings !== null) { epsSource = 'google';  epsFromGoogle++;  }
+    else if (yahooFund.eps !== null)        { epsSource = 'yahoo';   epsFromYahoo++;   }
+    else if (finnhubData.eps !== null)      { epsSource = 'finnhub'; epsFromFinnhub++; }
+    else if (mock?.latestEarnings != null)  { epsSource = 'mock';    epsFromMock++;    }
 
-    // Determine overall source for tracking
-    const source: 'live' | 'mock' = yahooCMP !== null ? 'live' : 'mock';
-    if (yahooCMP !== null) liveCount++;
+    // Overall source: live if CMP came from any real API
+    const source: 'live' | 'mock' = (cmpSource === 'yahoo' || cmpSource === 'finnhub') ? 'live' : 'mock';
+    if (source === 'live') liveCount++;
     else mockCount++;
 
     marketDataMap.set(code, {
@@ -203,9 +230,9 @@ export async function getEnrichedPortfolio(): Promise<PortfolioResponse> {
 
   console.log(
     `\n═══ Portfolio ready ═══` +
-    `\n  CMP   → Yahoo: ${liveCount}  |  Mock: ${mockCount}` +
-    `\n  P/E   → Google: ${peFromGoogle}  |  Yahoo fallback: ${peFromYahoo}  |  Mock: ${peFromMock}` +
-    `\n  EPS   → Google: ${epsFromGoogle}  |  Yahoo fallback: ${epsFromYahoo}  |  Mock: ${epsFromMock}` +
+    `\n  CMP   → Yahoo: ${cmpFromYahoo}  |  Finnhub: ${cmpFromFinnhub}  |  Mock: ${mockCount}` +
+    `\n  P/E   → Google: ${peFromGoogle}  |  Yahoo: ${peFromYahoo}  |  Finnhub: ${peFromFinnhub}  |  Mock: ${peFromMock}` +
+    `\n  EPS   → Google: ${epsFromGoogle}  |  Yahoo: ${epsFromYahoo}  |  Finnhub: ${epsFromFinnhub}  |  Mock: ${epsFromMock}` +
     `\n═══════════════════════\n`
   );
 

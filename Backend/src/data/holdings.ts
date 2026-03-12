@@ -94,3 +94,14 @@ export function getGoogleFinanceSymbol(exchangeCode: string): string {
   if (/^\d+$/.test(exchangeCode)) return `BOM:${exchangeCode}`;
   return `NSE:${exchangeCode}`;
 }
+
+/**
+ * Get the Finnhub ticker symbol for a stock.
+ * Uses NSE:SYMBOL or BSE:CODE format.
+ */
+export function getFinnhubSymbol(exchangeCode: string): string {
+  const nseSymbol = nseSymbolMap[exchangeCode];
+  if (nseSymbol) return `NSE:${nseSymbol}`;
+  if (/^\d+$/.test(exchangeCode)) return `BSE:${exchangeCode}`;
+  return `NSE:${exchangeCode}`;
+}

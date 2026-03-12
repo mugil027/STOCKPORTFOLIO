@@ -15,9 +15,9 @@ export interface MarketData {
   latestEarnings: number | null; // EPS (Google Finance)
   lastUpdated: string;           // ISO timestamp
   source: 'live' | 'mock';      // Overall source (for backward compat)
-  cmpSource: 'yahoo' | 'mock' | null;                     // Where CMP came from
-  peSource: 'google' | 'yahoo' | 'mock' | null;           // Where P/E came from
-  epsSource: 'google' | 'yahoo' | 'mock' | null;          // Where EPS came from
+  cmpSource: 'yahoo' | 'finnhub' | 'mock' | null;                     // Where CMP came from
+  peSource: 'google' | 'yahoo' | 'finnhub' | 'mock' | null;           // Where P/E came from
+  epsSource: 'google' | 'yahoo' | 'finnhub' | 'mock' | null;          // Where EPS came from
 }
 
 // ─── Computed Fields ───
