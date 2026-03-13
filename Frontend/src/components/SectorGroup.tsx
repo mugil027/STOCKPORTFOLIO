@@ -97,7 +97,7 @@ const TABLE_HEADERS = [
   { label: 'Gain/Loss',      align: 'right' as const },
   { label: 'Gain/Loss %',    align: 'right' as const },
   { label: 'P/E Ratio',      align: 'right' as const },
-  { label: 'EPS',            align: 'right' as const },
+  { label: 'Latest Earnings', align: 'right' as const },
 ];
 
 const SectorGroup: React.FC<SectorGroupProps> = ({ sector, index }) => {
